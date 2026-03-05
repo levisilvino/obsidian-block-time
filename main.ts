@@ -483,13 +483,13 @@ class TaskParser {
 		const hitRate = total > 0 ? ((this.cacheHits / total) * 100).toFixed(1) : "0";
 		console.debug(`[BlockTime] Cache: ${this.cacheHits} hits / ${this.cacheMisses} misses (${hitRate}% hit rate) | ${files.length} arquivos | ${tasks.length} tasks`);
 
-		// Filtra tasks [ ] + 🔁 sem data que já foram completadas hoje
+		// Filtra tasks [ ] + 🔁 sem data que já foram completadas hoje (apenas se não existir task pendente)
 		const today = new Date();
 		return tasks.filter(task => {
-			// Só filtra: pendente + recorrente + sem data explícita
+			// Se não é pendente + recorrente + sem data, mantém
 			if (task.completed || !task.recurrence || this.hasExplicitDate(task.rawLine)) return true;
 
-			// Verifica se existe [x] + 🔁 + ✅ hoje no mesmo arquivo com mesmo texto limpo
+			// Verifica se existe [x] + 🔁 + ✅ hoje E não existe [ ] + 🔁 no mesmo arquivo
 			const hasDoneToday = tasks.some(other =>
 				other.completed &&
 				other.recurrence &&
@@ -499,7 +499,20 @@ class TaskParser {
 				this.parseDoneDate(other.rawLine) !== null &&
 				this.isSameDay(this.parseDoneDate(other.rawLine)!, today)
 			);
-			return !hasDoneToday;
+			
+			// Se foi completada hoje, verifica se ainda existe task pendente
+			if (hasDoneToday) {
+				const hasPending = tasks.some(other =>
+					!other.completed &&
+					other.recurrence &&
+					other.filePath === task.filePath &&
+					other.text === task.text &&
+					!this.hasExplicitDate(other.rawLine)
+				);
+				return hasPending; // Mantém apenas se ainda existe task pendente
+			}
+			
+			return true; // Mantém se não foi completada hoje
 		});
 	}
 
@@ -553,8 +566,8 @@ class TaskParser {
 					// Se existe versão completada, mostra apenas ela
 					tasks.push(completedVersion);
 					seenTaskKeys.add(taskKey);
-				} else if (hasPendingTask && targetDate >= today) {
-					// Se existe task pendente E é data futura, gera ocorrência prevista
+				} else if (hasPendingTask && (targetDate >= today || !this.hasExplicitDate(task.rawLine))) {
+					// Se existe task pendente E (é data futura OU é recorrência sem data), gera ocorrência prevista
 					const generatedTask = this.createRecurrenceInstance(task, targetDate);
 					tasks.push(generatedTask);
 					seenTaskKeys.add(taskKey);
