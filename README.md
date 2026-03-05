@@ -9,7 +9,7 @@ Agenda visual para Obsidian com integração completa ao Tasks API, notificaçõ
 - **Adiciona no calendário Automaticamente** — Adiciona tasks no calendário automaticamente com data e hora
 - **Agenda visual** — Grid de horas diário e semanal
 - **Tasks API v1** — Criação, edição e toggle via plugin Tasks
-- **Notificações** — Lembretes de horário e prazo (desktop + web)
+- **Notificações** — Lembretes de horário e prazo desktop
 - **Cache otimizado** — fileContentCache com métricas hits/misses
 
 ## Como usar 
@@ -26,7 +26,12 @@ Agenda visual para Obsidian com integração completa ao Tasks API, notificaçõ
 
 
 ## Screenshots
+![plugin-gif](https://github.com/user-attachments/assets/ad564c77-96bc-4dcb-8c31-6f02d36c2818)
 
+
+<img width="810" height="726" alt="Captura de tela 2026-03-05 050059" src="https://github.com/user-attachments/assets/a768d767-2077-404f-800a-7e6dea1642a7" />
+
+<img width="773" height="782" alt="image" src="https://github.com/user-attachments/assets/a74efb1e-4923-4d49-9bd3-99f31807fbc8" />
 
 
 ## Instalação
