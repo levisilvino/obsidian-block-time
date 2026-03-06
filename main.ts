@@ -548,6 +548,7 @@ class I18n {
 // CONSTANTES
 // ============================================================================
 
+const PLUGIN_VERSION = "1.0.0";
 const VIEW_TYPE_BLOCK_TIME = "block-time-view";
 
 // ============================================================================
@@ -561,6 +562,7 @@ export default class BlockTimeSchedulerPlugin extends Plugin {
 	private lastResetDate: string = "";
 	fileContentCache: Map<string, string> = new Map();
 	i18n: I18n;
+	settingTab: BlockTimeSettingTab | null = null; // Referência para invalidação de cache
 
 	async onload() {
 		await this.loadSettings();
@@ -598,7 +600,33 @@ export default class BlockTimeSchedulerPlugin extends Plugin {
 		});
 
 		// Aba de configurações
-		this.addSettingTab(new BlockTimeSettingTab(this.app, this));
+		this.settingTab = new BlockTimeSettingTab(this.app, this);
+		this.addSettingTab(this.settingTab);
+
+		// Eventos para invalidar cache de pastas quando arquivos são modificados
+		this.registerEvent(this.app.vault.on('modify', (file) => {
+			if (this.settingTab) {
+				this.settingTab.invalidateFolderCache();
+			}
+		}));
+
+		this.registerEvent(this.app.vault.on('delete', (file) => {
+			if (this.settingTab) {
+				this.settingTab.invalidateFolderCache();
+			}
+		}));
+
+		this.registerEvent(this.app.vault.on('rename', (file, oldPath) => {
+			if (this.settingTab) {
+				this.settingTab.invalidateFolderCache();
+			}
+		}));
+
+		this.registerEvent(this.app.metadataCache.on('changed', (file) => {
+			if (this.settingTab) {
+				this.settingTab.invalidateFolderCache();
+			}
+		}));
 
 		// Cache de conteúdo: invalida quando arquivo é modificado/removido/renomeado
 		this.registerEvent(
@@ -621,13 +649,13 @@ export default class BlockTimeSchedulerPlugin extends Plugin {
 		// Inicia sistema de notificações
 		this.startNotificationScheduler();
 
-		console.log("Block Time Scheduler carregado!");
+		console.log(`Block Time Scheduler v${PLUGIN_VERSION} carregado!`);
 	}
 
 	onunload() {
 		this.stopNotificationScheduler();
 		this.fileContentCache.clear();
-		console.log("Block Time Scheduler descarregado!");
+		console.log(`Block Time Scheduler v${PLUGIN_VERSION} descarregado!`);
 	}
 
 	getTasksApi(): TasksApiV1 | null {
@@ -1044,6 +1072,44 @@ class TaskParser {
 		return tasks;
 	}
 
+	private calculateImplicitStartDate(recurrence: string, currentDate: Date): Date {
+		const rule = recurrence.toLowerCase().trim();
+		
+		// Every week on specific day (formato Tasks simples)
+		const simpleWeekOnMatch = rule.match(/every\s+week\s+on\s+(.+)/i);
+		if (simpleWeekOnMatch) {
+			const dayText = simpleWeekOnMatch[1].toLowerCase().trim();
+			const dayNames: Record<string, number> = {
+				sunday: 0, monday: 1, tuesday: 2, wednesday: 3,
+				thursday: 4, friday: 5, saturday: 6
+			};
+			
+			const targetDay = dayNames[dayText];
+			if (targetDay !== undefined) {
+				const result = new Date(currentDate);
+				const currentDay = result.getDay();
+				const daysUntilTarget = (targetDay - currentDay + 7) % 7;
+				result.setDate(result.getDate() + daysUntilTarget);
+				return result;
+			}
+		}
+		
+		// Every weekday (seg-sex)
+		if (/every\s+weekday/i.test(rule)) {
+			const result = new Date(currentDate);
+			const currentDay = result.getDay();
+			if (currentDay === 0) { // Domingo
+				result.setDate(result.getDate() + 1); // Próxima Segunda
+			} else if (currentDay === 6) { // Sábado
+				result.setDate(result.getDate() + 2); // Próxima Segunda
+			}
+			return result;
+		}
+		
+		// Para outros casos, usa data atual
+		return new Date(currentDate);
+	}
+
 	private shouldRecurOnDate(task: ParsedTask, targetDate: Date): boolean {
 		if (!task.recurrence) return false;
 		const recurrenceRule = task.recurrence.toLowerCase().trim();
@@ -1051,9 +1117,8 @@ class TaskParser {
 		// Data de início da recorrência
 		let startDate = task.date;
 		if (!startDate) {
-			// Se não tem data, usa 30 dias atrás como referência
-			startDate = new Date();
-			startDate.setDate(startDate.getDate() - 30);
+			// Se não tem data, calcula data implícita baseada na recorrência
+			startDate = this.calculateImplicitStartDate(task.recurrence, new Date());
 		}
 
 		// Não aparece antes da data de início
@@ -1062,12 +1127,126 @@ class TaskParser {
 		// Every day
 		if (/every\s+day/i.test(recurrenceRule)) return true;
 		
-		// Every week
-		if (/every\s+week/i.test(recurrenceRule)) {
+		// Every weekday (seg-sex)
+		if (/every\s+weekday/i.test(recurrenceRule)) {
+			const dayOfWeek = targetDate.getDay();
+			return dayOfWeek >= 1 && dayOfWeek <= 5;
+		}
+
+		// Every week on specific day (formato Tasks)
+		const weekOnMatch = recurrenceRule.match(/every\s+(\d+)\s+weeks?\s+on\s+(.+)/i);
+		if (weekOnMatch) {
+			const daysText = weekOnMatch[2].toLowerCase();
+			const days = daysText.split(',').map(d => d.trim().replace(/,$/, ''));
+			
+			const dayNames: Record<string, number> = {
+				sunday: 0, monday: 1, tuesday: 2, wednesday: 3,
+				thursday: 4, friday: 5, saturday: 6
+			};
+			
+			const targetDayOfWeek = targetDate.getDay();
+			return days.some(day => {
+				const dayNum = dayNames[day];
+				return dayNum !== undefined && dayNum === targetDayOfWeek;
+			});
+		}
+
+		// Every week on specific day (formato Tasks simples)
+		const simpleWeekOnMatch = recurrenceRule.match(/every\s+week\s+on\s+(.+)/i);
+		if (simpleWeekOnMatch) {
+			const dayText = simpleWeekOnMatch[1].toLowerCase().trim();
+			const dayNames: Record<string, number> = {
+				sunday: 0, monday: 1, tuesday: 2, wednesday: 3,
+				thursday: 4, friday: 5, saturday: 6
+			};
+			
+			const targetDayOfWeek = targetDate.getDay();
+			const dayNum = dayNames[dayText];
+			return dayNum !== undefined && dayNum === targetDayOfWeek;
+		}
+
+		// Every week (genérico) - não captura "every week on"
+		if (/every\s+week$/i.test(recurrenceRule)) {
 			return startDate.getDay() === targetDate.getDay();
 		}
 
-		// Every month (sem número)
+		// Every month on specific day (formato Tasks)
+		const monthOnMatch = recurrenceRule.match(/every\s+month\s+on\s+the\s+(\d+)(?:st|nd|rd|th)/i);
+		if (monthOnMatch) {
+			const targetDay = parseInt(monthOnMatch[1]);
+			return targetDate.getDate() === targetDay;
+		}
+
+		// Every N months on specific day (formato Tasks)
+		const nMonthOnMatch = recurrenceRule.match(/every\s+(\d+)\s+months?\s+on\s+the\s+(\d+)(?:st|nd|rd|th)/i);
+		if (nMonthOnMatch) {
+			const n = parseInt(nMonthOnMatch[1]);
+			const targetDay = parseInt(nMonthOnMatch[2]);
+			const monthsDiff = (targetDate.getFullYear() - startDate.getFullYear()) * 12 + 
+							(targetDate.getMonth() - startDate.getMonth());
+			return monthsDiff >= 0 && monthsDiff % n === 0 && targetDate.getDate() === targetDay;
+		}
+
+		// Every N months on specific weekday (formato Tasks)
+		const nMonthWeekdayMatch = recurrenceRule.match(/every\s+(\d+)\s+months?\s+on\s+the\s+(\d+)(?:st|nd|rd|th)\s+(sunday|monday|tuesday|wednesday|thursday|friday|saturday)/i);
+		if (nMonthWeekdayMatch) {
+			const n = parseInt(nMonthWeekdayMatch[1]);
+			const weekNum = parseInt(nMonthWeekdayMatch[2]);
+			const weekday = nMonthWeekdayMatch[3].toLowerCase();
+			
+			const dayNames: Record<string, number> = {
+				sunday: 0, monday: 1, tuesday: 2, wednesday: 3,
+				thursday: 4, friday: 5, saturday: 6
+			};
+			
+			const targetWeekday = dayNames[weekday];
+			const firstDayOfMonth = new Date(targetDate.getFullYear(), targetDate.getMonth(), 1);
+			const firstWeekday = firstDayOfMonth.getDay();
+			const offset = (targetWeekday - firstWeekday + 7) % 7;
+			const targetDateOfMonth = 1 + offset + (weekNum - 1) * 7;
+			
+			if (targetDateOfMonth > new Date(targetDate.getFullYear(), targetDate.getMonth() + 1, 0).getDate()) {
+				return false; // Dia não existe neste mês
+			}
+			
+			const monthsDiff = (targetDate.getFullYear() - startDate.getFullYear()) * 12 + 
+							(targetDate.getMonth() - startDate.getMonth());
+			return monthsDiff >= 0 && monthsDiff % n === 0 && targetDate.getDate() === targetDateOfMonth;
+		}
+
+		// Every specific month on specific day (formato Tasks)
+		const specificMonthMatch = recurrenceRule.match(/every\s+(january|february|march|april|may|june|july|august|september|october|november|december)\s+on\s+the\s+(\d+)(?:st|nd|rd|th)/i);
+		if (specificMonthMatch) {
+			const monthName = specificMonthMatch[1].toLowerCase();
+			const targetDay = parseInt(specificMonthMatch[2]);
+			const monthNames: Record<string, number> = {
+				january: 0, february: 1, march: 2, april: 3, may: 4, june: 5,
+				july: 6, august: 7, september: 8, october: 9, november: 10, december: 11
+			};
+			return targetDate.getMonth() === monthNames[monthName] && targetDate.getDate() === targetDay;
+		}
+
+		// Every specific months on specific days (formato Tasks)
+		const specificMonthsMatch = recurrenceRule.match(/every\s+(january|february|march|april|may|june|july|august|september|october|november|december)\s+and\s+(january|february|march|april|may|june|july|august|september|october|november|december)\s+on\s+the\s+(\d+)(?:st|nd|rd|th)\s+and\s+the\s+(\d+)(?:st|nd|rd|th)/i);
+		if (specificMonthsMatch) {
+			const month1Name = specificMonthsMatch[1].toLowerCase();
+			const month2Name = specificMonthsMatch[2].toLowerCase();
+			const targetDay1 = parseInt(specificMonthsMatch[3]);
+			const targetDay2 = parseInt(specificMonthsMatch[4]);
+			
+			const monthNames: Record<string, number> = {
+				january: 0, february: 1, march: 2, april: 3, may: 4, june: 5,
+				july: 6, august: 7, september: 8, october: 9, november: 10, december: 11
+			};
+			
+			const currentMonth = targetDate.getMonth();
+			const currentDay = targetDate.getDate();
+			
+			return (currentMonth === monthNames[month1Name] && currentDay === targetDay1) ||
+				   (currentMonth === monthNames[month2Name] && currentDay === targetDay2);
+		}
+
+		// Every month (genérico)
 		if (/every\s+month/i.test(recurrenceRule)) {
 			return startDate.getDate() === targetDate.getDate();
 		}
@@ -1095,22 +1274,6 @@ class TaskParser {
 			}
 		}
 
-		// Every weekday
-		if (/every\s+weekday/i.test(recurrenceRule)) {
-			const dayOfWeek = targetDate.getDay();
-			return dayOfWeek >= 1 && dayOfWeek <= 5;
-		}
-
-		// Every Monday/Tuesday/etc
-		const dayNames: Record<string, number> = {
-			sunday: 0, monday: 1, tuesday: 2, wednesday: 3,
-			thursday: 4, friday: 5, saturday: 6
-		};
-		const dayMatch = recurrenceRule.match(/every\s+(sunday|monday|tuesday|wednesday|thursday|friday|saturday)/i);
-		if (dayMatch) {
-			const targetDay = dayNames[dayMatch[1].toLowerCase()];
-			return targetDate.getDay() === targetDay;
-		}
 
 		return false;
 	}
@@ -1402,8 +1565,8 @@ class TaskParser {
 			return baseDate;
 		}
 
-		// every week
-		if (/every\s+week/i.test(rule)) {
+		// every week (genérico) - não captura "every week on"
+		if (/every\s+week$/i.test(rule)) {
 			baseDate.setDate(baseDate.getDate() + 7);
 			return baseDate;
 		}
@@ -1428,17 +1591,18 @@ class TaskParser {
 			return baseDate;
 		}
 
-		// every Monday/Tuesday/Wednesday/Thursday/Friday/Saturday/Sunday
-		const dayNames: Record<string, number> = {
-			sunday: 0, monday: 1, tuesday: 2, wednesday: 3,
-			thursday: 4, friday: 5, saturday: 6
-		};
-		const dayMatch = rule.match(/every\s+(sunday|monday|tuesday|wednesday|thursday|friday|saturday)/i);
-		if (dayMatch) {
-			const targetDay = dayNames[dayMatch[1].toLowerCase()];
-			do {
-				baseDate.setDate(baseDate.getDate() + 1);
-			} while (baseDate.getDay() !== targetDay);
+		// every week on specific day (formato Tasks)
+		const weekOnMatch = rule.match(/every\s+(\d+)\s+weeks?\s+on\s+(.+)/i);
+		if (weekOnMatch) {
+			const n = parseInt(weekOnMatch[1]);
+			baseDate.setDate(baseDate.getDate() + (7 * n));
+			return baseDate;
+		}
+
+		// every week on specific day (formato Tasks simples)
+		const simpleWeekOnMatch = rule.match(/every\s+week\s+on\s+(.+)/i);
+		if (simpleWeekOnMatch) {
+			baseDate.setDate(baseDate.getDate() + 7);
 			return baseDate;
 		}
 
@@ -1480,7 +1644,7 @@ class TaskParser {
 			}
 		}
 
-		// Fallback manual
+		// Fallback manual (só se Tasks API não estiver disponível)
 		const content = await this.app.vault.read(file);
 		const lines = content.split("\n");
 		const lineIndex = task.line - 1;
@@ -1658,7 +1822,6 @@ class BlockTimeView extends ItemView {
 		if (today !== this.lastKnownDay) {
 			this.lastKnownDay = today;
 			this.currentDate = new Date();
-			console.debug("[BlockTime] Dia mudou, atualizando para", today);
 			this.render();
 		}
 	}
@@ -2136,6 +2299,21 @@ class BlockTimeView extends ItemView {
 class BlockTimeSettingTab extends PluginSettingTab {
 	plugin: BlockTimeSchedulerPlugin;
 
+	// Cache para evitar reescaneamento desnecessário
+	private folderCache: {
+		folders: Set<string>;
+		timestamp: number;
+		fileCount: number;
+	} | null = null;
+
+	private folderTreeCache: {
+		tree: FolderNode[];
+		timestamp: number;
+		fileCount: number;
+	} | null = null;
+
+	private readonly CACHE_DURATION = 30000; // 30 segundos
+
 	constructor(app: App, plugin: BlockTimeSchedulerPlugin) {
 		super(app, plugin);
 		this.plugin = plugin;
@@ -2146,6 +2324,19 @@ class BlockTimeSettingTab extends PluginSettingTab {
 	// ============================================================================
 
 	private getAllFolders(): Set<string> {
+		const now = Date.now();
+		
+		// Verificar se cache é válido (apenas por tempo)
+		if (this.folderCache && 
+			this.folderCache.folders.size > 0 &&
+			(now - this.folderCache.timestamp) < this.CACHE_DURATION) {
+			
+			return this.folderCache.folders;
+		}
+
+		// Cache inválido ou não existe - recalcular
+		const startTime = performance.now();
+		
 		const folders = new Set<string>();
 		const files = this.app.vault.getFiles();
 		
@@ -2159,11 +2350,40 @@ class BlockTimeSettingTab extends PluginSettingTab {
 				folders.add(currentPath);
 			}
 		}
+
+		// Atualizar cache
+		this.folderCache = {
+			folders,
+			timestamp: now,
+			fileCount: files.length // Mantido para logging, não usado na validação
+		};
+
+		const endTime = performance.now();
 		
 		return folders;
 	}
 
+	public invalidateFolderCache(): void {
+		if (this.folderCache || this.folderTreeCache) {
+			this.folderCache = null;
+			this.folderTreeCache = null;
+		}
+	}
+
 	private buildFolderTree(files: TFile[]): FolderNode[] {
+		const now = Date.now();
+		
+		// Verificar se cache é válido (apenas por tempo)
+		if (this.folderTreeCache && 
+			this.folderTreeCache.tree.length > 0 &&
+			(now - this.folderTreeCache.timestamp) < this.CACHE_DURATION) {
+			
+			return this.folderTreeCache.tree;
+		}
+
+		// Cache inválido ou não existe - recalcular
+		const startTime = performance.now();
+		
 		const nodeMap = new Map<string, FolderNode>();
 
 		// Inicializa todos os nós
@@ -2197,7 +2417,18 @@ class BlockTimeSettingTab extends PluginSettingTab {
 		}
 
 		// Retorna apenas os nós raiz
-		return Array.from(nodeMap.values()).filter(node => !node.path.includes("/"));
+		const tree = Array.from(nodeMap.values()).filter(node => !node.path.includes("/"));
+
+		// Atualizar cache
+		this.folderTreeCache = {
+			tree,
+			timestamp: now,
+			fileCount: files.length // Mantido para logging, não usado na validação
+		};
+
+		const endTime = performance.now();
+
+		return tree;
 	}
 
 	private parseSelectedFolders(): string[] {
