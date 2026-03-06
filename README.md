@@ -1,6 +1,6 @@
 # Block Time Scheduler
 
-Agenda visual para Obsidian com integração completa ao Tasks API, notificações inteligentes e cache otimizado.
+Agenda visual para Obsidian com integração completa ao Tasks API, suporte completo a recorrências e cache otimizado.
 
 
 ## Recursos
@@ -9,24 +9,31 @@ Agenda visual para Obsidian com integração completa ao Tasks API, notificaçõ
 - **Adiciona no calendário Automaticamente** — Adiciona tasks no calendário automaticamente com data e hora
 - **Agenda visual** — Grid de horas diário e semanal
 - **Tasks API v1** — Criação, edição e toggle via plugin Tasks
-- **Notificações** — Lembretes de horário e prazo (desktop + web)
+- **Recorrência completa** — Suporte total à sintaxe do plugin Tasks
+- **Notificações** — Lembretes de horário e prazo desktop
 - **Cache otimizado** — fileContentCache com métricas hits/misses
 
-## Como usar 
+## Como usar
 
-- 1. Crie uma task com 🔁 recorrência sem data e hora'- [ ] Exemplo 🔁 every day' 
-- 2. A task será adicionada automaticamente no calendário hoje em tarefas sem hora definida
+### Tasks Recorrentes (sem data)
+- Crie: `- [ ] Reunião semanal 🔁 every week on Friday`
+- Aparece automaticamente na próxima Sexta-feira
+- Recorrência gerenciada pelo plugin Tasks (se instalado)
 
-**ou**
+### Tasks com Data/Hora
+- Crie: `- [ ] Reunião 🔁 every week 14h 📅 2025-10-24`
+- Aparece no calendário na data e horário especificados
 
-- 1. Crie uma task com data e hora '- [ ] Exemplo 6h 📅 2025-10-20' 
-- 2. A task será adicionada automaticamente no calendário com data e hora
-
-
-
+### Tasks Diárias
+- Crie: `- [ ] Check email 🔁 every day`
+- Aparece todos os dias sem precisar de data
 
 ## Screenshots
+![plugin-gif](https://github.com/user-attachments/assets/ad564c77-96bc-4dcb-8c31-6f02d36c2818)
 
+<img width="810" height="726" alt="Captura de tela 2026-03-05 050059" src="https://github.com/user-attachments/assets/a768d767-2077-404f-800a-7e6dea1642a7" />
+
+<img width="773" height="782" alt="image" src="https://github.com/user-attachments/assets/a74efb1e-4923-4d49-9bd3-99f31807fbc8" />
 
 
 ## Instalação
@@ -42,24 +49,41 @@ Agenda visual para Obsidian com integração completa ao Tasks API, notificaçõ
 brat install levisilvino obsidian-block-time
 ```
 
-##  Configuração
+## 🔄 Integração Tasks API
+
+### Criação de tasks
+- **Clique em slot vazio** → Abre modal Tasks → Salva no Daily Note
+- **Duplo-clique em bloco** → Edita task existente via modal Tasks
+
+### Toggle completion
+- **Checkbox** → Usa Tasks API (recorrência automática) ou fallback manual
+- **Compatibilidade total** → Funciona com ou sem plugin Tasks instalado
+
+### Gerenciamento de recorrência
+- **Com Tasks API** → Plugin Tasks gerencia criação da próxima ocorrência
+- **Sem Tasks API** → Block Time Scheduler usa fallback manual
+- **Formatos compatíveis** → 100% alinhado com sintaxe do Tasks plugin
+
+> **Importante**: Requer plugin **Tasks** (`obsidian-tasks-plugin`) para criação/edição avançada. Toggle funciona sem ele.
+
+## ⚙️ Configuração
 
 Acesse **Configurações → Community plugins → Block Time Scheduler**:
 
-###  Agenda
+### Agenda
 - **Horas exibidas** — Início (0-12) e término (18-24)
 - **Visualização padrão** — Diária ou semanal
-- **Pastas a escanear** — Folder picker visual (vazio = vault inteiro)
+- **Pastas a escanear** — Separado por vírgula (vazio = vault inteiro)
 
-###  Aparência
+### Aparência
 - **Tema Obsidian** — Herda cores do tema ativo
 
-###  Notificações
+### Notificações
 - **Horário** — Notificação no momento + X minutos antes
 - **Prazos** — X dias antes + no dia (tags configuráveis)
 - **Templates** — Textos personalizáveis com placeholders
 
-###  Placeholders
+### Placeholders
 - `{task}` — Nome da tarefa
 - `{min}` — Minutos antes
 - `{days}` — Dias restantes
@@ -68,17 +92,7 @@ Acesse **Configurações → Community plugins → Block Time Scheduler**:
 - `{file}` — Arquivo
 - `{date}` — Data
 
-## 🔄 Integração Tasks API
-
-### Criação de tasks
-- **Clique em slot vazio** → Abre modal Tasks → Salva no Daily Note
-
-### Toggle completion
-- **Checkbox** — Usa Tasks API (recorrência automática) ou fallback manual
-
-> Requer plugin **Tasks** (`obsidian-tasks-plugin`) para criação/edição. Toggle funciona sem ele.
-
-## 🛠️ Desenvolvimento
+## ️ Desenvolvimento
 
 ```bash
 # Clone
