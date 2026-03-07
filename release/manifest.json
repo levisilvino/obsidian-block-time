@@ -3,9 +3,8 @@
 	"name": "Block Time",
 	"version": "1.0.1",
 	"minAppVersion": "1.0.0",
-	"description": "Visual block time scheduling for tasks.",
+	"description": "Create time blocks from tasks in your notes.",
 	"author": "Levi Silvino",
-	"authorUrl": "https://github.com/levisilvino/block-time",
-	"repo": "levisilvino/block-time",
+	"authorUrl": "https://github.com/levisilvino",
 	"isDesktopOnly": false
 }
