@@ -44,3 +44,8 @@ jest.config.js
 tsconfig.json
 package.json
 package-lock.json
+
+# Release files
+*.zip
+*.rar
+release/
