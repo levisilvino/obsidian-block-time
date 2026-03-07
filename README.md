@@ -45,7 +45,6 @@ brat install levisilvino obsidian-block-time
 
 ### Criação de tasks
 - **Clique em slot vazio** → Abre modal Tasks → Salva no arquivo configurado
-- **Duplo-clique em bloco** → Edita task existente via modal Tasks
 
 ### Pasta para criação de tasks
 Configure onde as novas tasks serão criadas:
