@@ -6,5 +6,6 @@
 	"description": "Visual block time scheduling for tasks.",
 	"author": "Levi Silvino",
 	"authorUrl": "https://github.com/levisilvino/block-time",
+	"repo": "levisilvino/block-time",
 	"isDesktopOnly": false
 }
