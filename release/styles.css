@@ -546,6 +546,14 @@
 	padding-bottom: 8px;
 }
 
+.block-time-info-box {
+	margin-top: 8px;
+	padding: 10px 12px;
+	border-radius: 6px;
+	background-color: var(--background-secondary);
+	line-height: 1.6;
+}
+
 /* ============================================================================
    FOLDER PICKER (Settings)
    ============================================================================ */

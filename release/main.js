@@ -449,8 +449,8 @@ var TRANSLATIONS = {
   }
 };
 var I18n = class {
-  constructor(moment2) {
-    this.locale = moment2.locale() || "en";
+  constructor() {
+    this.locale = import_obsidian.moment.locale() || "en";
     const localeMap = {
       "pt-br": "pt",
       "pt": "pt",
@@ -474,6 +474,11 @@ var I18n = class {
     return this.locale;
   }
 };
+function setCssProps(element, props) {
+  for (const [key, value] of Object.entries(props)) {
+    element.style.setProperty(key, String(value));
+  }
+}
 var PLUGIN_VERSION = "1.0.0";
 var VIEW_TYPE_BLOCK_TIME = "block-time-view";
 var BlockTimeSchedulerPlugin = class extends import_obsidian.Plugin {
@@ -483,32 +488,35 @@ var BlockTimeSchedulerPlugin = class extends import_obsidian.Plugin {
     this.firedNotifications = /* @__PURE__ */ new Set();
     this.lastResetDate = "";
     this.fileContentCache = /* @__PURE__ */ new Map();
+    // Índice persistente de tasks por arquivo — invalidação incremental
+    this.taskIndex = /* @__PURE__ */ new Map();
+    this.dirtyFiles = /* @__PURE__ */ new Set();
     this.settingTab = null;
   }
   // Referência para invalidação de cache
   async onload() {
     await this.loadSettings();
-    this.i18n = new I18n(window.moment);
+    this.i18n = new I18n();
     this.registerView(
       VIEW_TYPE_BLOCK_TIME,
       (leaf) => new BlockTimeView(leaf, this)
     );
     this.addCommand({
-      id: "open-block-time-scheduler",
-      name: "Abrir Agenda Block Time",
+      id: "open-agenda",
+      name: "Open agenda",
       callback: () => {
-        this.activateView("tab");
+        void this.activateView("tab");
       }
     });
     this.addCommand({
-      id: "open-block-time-sidebar",
-      name: "Abrir Agenda Block Time (Lateral)",
+      id: "open-agenda-sidebar",
+      name: "Open agenda in sidebar",
       callback: () => {
-        this.activateView("sidebar");
+        void this.activateView("sidebar");
       }
     });
-    this.addRibbonIcon("calendar-clock", "Block Time Scheduler", () => {
-      this.activateView("tab");
+    this.addRibbonIcon("calendar-clock", "Block time scheduler", () => {
+      void this.activateView("tab");
     });
     this.settingTab = new BlockTimeSettingTab(this.app, this);
     this.addSettingTab(this.settingTab);
@@ -534,36 +542,46 @@ var BlockTimeSchedulerPlugin = class extends import_obsidian.Plugin {
     }));
     this.registerEvent(
       this.app.vault.on("modify", (file) => {
-        if (file instanceof import_obsidian.TFile)
+        if (file instanceof import_obsidian.TFile) {
           this.fileContentCache.delete(file.path);
+          this.dirtyFiles.add(file.path);
+        }
       })
     );
     this.registerEvent(
       this.app.vault.on("delete", (file) => {
-        if (file instanceof import_obsidian.TFile)
+        if (file instanceof import_obsidian.TFile) {
           this.fileContentCache.delete(file.path);
+          this.taskIndex.delete(file.path);
+          this.dirtyFiles.delete(file.path);
+        }
       })
     );
     this.registerEvent(
       this.app.vault.on("rename", (file, oldPath) => {
         this.fileContentCache.delete(oldPath);
-        if (file instanceof import_obsidian.TFile)
+        this.taskIndex.delete(oldPath);
+        this.dirtyFiles.delete(oldPath);
+        if (file instanceof import_obsidian.TFile) {
           this.fileContentCache.delete(file.path);
+          this.dirtyFiles.add(file.path);
+        }
       })
     );
     this.startNotificationScheduler();
-    console.log(`Block Time Scheduler v${PLUGIN_VERSION} carregado!`);
+    console.debug(`Block Time Scheduler v${PLUGIN_VERSION} carregado!`);
   }
   onunload() {
     this.stopNotificationScheduler();
     this.fileContentCache.clear();
-    console.log(`Block Time Scheduler v${PLUGIN_VERSION} descarregado!`);
+    console.debug(`Block Time Scheduler v${PLUGIN_VERSION} descarregado!`);
   }
   getTasksApi() {
     var _a, _b, _c;
     try {
-      const tasksPlugin = (_b = (_a = this.app.plugins) == null ? void 0 : _a.plugins) == null ? void 0 : _b["obsidian-tasks-plugin"];
-      return (_c = tasksPlugin == null ? void 0 : tasksPlugin.apiV1) != null ? _c : null;
+      const appWithPlugins = this.app;
+      const plugin = (_b = (_a = appWithPlugins.plugins) == null ? void 0 : _a.plugins) == null ? void 0 : _b["obsidian-tasks-plugin"];
+      return (_c = plugin == null ? void 0 : plugin.apiV1) != null ? _c : null;
     } catch (e) {
       return null;
     }
@@ -576,9 +594,11 @@ var BlockTimeSchedulerPlugin = class extends import_obsidian.Plugin {
     this.firedNotifications.clear();
     this.lastResetDate = new Date().toDateString();
     this.notificationInterval = setInterval(() => {
-      this.checkAndFireNotifications();
+      void this.checkAndFireNotifications();
     }, 6e4);
-    setTimeout(() => this.checkAndFireNotifications(), 5e3);
+    setTimeout(() => {
+      void this.checkAndFireNotifications();
+    }, 5e3);
   }
   stopNotificationScheduler() {
     if (this.notificationInterval) {
@@ -594,7 +614,7 @@ var BlockTimeSchedulerPlugin = class extends import_obsidian.Plugin {
       this.firedNotifications.clear();
       this.lastResetDate = todayStr;
     }
-    const taskParser = new TaskParser(this.app, this.settings, this.fileContentCache);
+    const taskParser = new TaskParser(this.app, this.settings, this.fileContentCache, this.taskIndex, this.dirtyFiles);
     const now = new Date();
     const allTasks = await taskParser.getAllTasks();
     const todayTasks = allTasks.filter((t) => t.date && taskParser.isSameDay(t.date, now));
@@ -706,28 +726,18 @@ var BlockTimeSchedulerPlugin = class extends import_obsidian.Plugin {
     return `${date.getDate().toString().padStart(2, "0")}/${(date.getMonth() + 1).toString().padStart(2, "0")}`;
   }
   fireNotification(title, body, id) {
-    var _a, _b;
     this.firedNotifications.add(id);
     new import_obsidian.Notice(`${title}
 ${body}`, 1e4);
-    try {
-      const electron = require("electron");
-      const ElectronNotif = (_b = (_a = electron == null ? void 0 : electron.remote) == null ? void 0 : _a.Notification) != null ? _b : electron == null ? void 0 : electron.Notification;
-      if (ElectronNotif) {
-        const notif = new ElectronNotif({ title, body, silent: false });
-        notif.show();
-        return;
-      }
-    } catch (e) {
-    }
     if ("Notification" in window) {
       if (Notification.permission === "granted") {
         new Notification(title, { body });
       } else if (Notification.permission !== "denied") {
-        Notification.requestPermission().then((permission) => {
+        void Notification.requestPermission().then((permission) => {
           if (permission === "granted") {
             new Notification(title, { body });
           }
+        }).catch(() => {
         });
       }
     }
@@ -752,50 +762,115 @@ ${body}`, 1e4);
         type: VIEW_TYPE_BLOCK_TIME,
         active: true
       });
-      workspace.revealLeaf(leaf);
+      void workspace.revealLeaf(leaf);
     }
   }
 };
-var TaskParser = class {
-  constructor(app, settings, contentCache) {
+var _TaskParser = class {
+  constructor(app, settings, contentCache, taskIndex, dirtyFiles) {
+    // Métricas de performance
     this.cacheHits = 0;
     this.cacheMisses = 0;
+    this.filesReindexed = 0;
+    this.filesSkipped = 0;
     this.app = app;
     this.settings = settings;
-    this.contentCache = contentCache || /* @__PURE__ */ new Map();
+    this.contentCache = contentCache;
+    this.taskIndex = taskIndex;
+    this.dirtyFiles = dirtyFiles;
   }
   async readFile(file) {
+    var _a;
     const path = file.path;
     if (this.contentCache.has(path)) {
       this.cacheHits++;
-      return this.contentCache.get(path);
+      return (_a = this.contentCache.get(path)) != null ? _a : "";
     }
     this.cacheMisses++;
     const content = await this.app.vault.cachedRead(file);
     this.contentCache.set(path, content);
     return content;
   }
+  /** Yield ao main thread para não bloquear a UI */
+  yieldToMain() {
+    return new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  /** Early-exit: verifica rapidamente se conteúdo pode ter tasks */
+  hasTaskPatternQuick(content) {
+    return _TaskParser.TASK_PATTERN.test(content);
+  }
+  /** Processa um batch de arquivos em paralelo */
+  async processFileBatch(files) {
+    const results = await Promise.allSettled(
+      files.map(async (file) => {
+        const content = await this.readFile(file);
+        if (!this.hasTaskPatternQuick(content)) {
+          this.filesSkipped++;
+          this.taskIndex.set(file.path, []);
+          return;
+        }
+        const tasks = [];
+        const lines = content.split("\n");
+        for (let i = 0; i < lines.length; i++) {
+          const task = this.parseLine(lines[i], file.path, i + 1);
+          if (task)
+            tasks.push(task);
+        }
+        this.taskIndex.set(file.path, tasks);
+        this.filesReindexed++;
+      })
+    );
+    for (const result of results) {
+      if (result.status === "rejected") {
+        console.warn("[BlockTime] Erro ao processar arquivo:", result.reason);
+      }
+    }
+  }
   async getAllTasks() {
+    const perfStart = performance.now();
     this.cacheHits = 0;
     this.cacheMisses = 0;
-    const tasks = [];
+    this.filesReindexed = 0;
+    this.filesSkipped = 0;
     const allFiles = this.app.vault.getMarkdownFiles();
     const scanFolders = this.settings.scanFolders.split(",").map((f) => f.trim().replace(/^\/+|\/+$/g, "")).filter((f) => f.length > 0);
     const files = scanFolders.length > 0 ? allFiles.filter((f) => scanFolders.some((folder) => f.path.startsWith(folder + "/") || f.path === folder)) : allFiles;
-    for (const file of files) {
-      const content = await this.readFile(file);
-      const lines = content.split("\n");
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
-        const task = this.parseLine(line, file.path, i + 1);
-        if (task) {
-          tasks.push(task);
+    if (this.taskIndex.size === 0) {
+      for (let i = 0; i < files.length; i += _TaskParser.BATCH_SIZE) {
+        const batch = files.slice(i, i + _TaskParser.BATCH_SIZE);
+        await this.processFileBatch(batch);
+        if (i > 0 && i % _TaskParser.YIELD_EVERY === 0) {
+          await this.yieldToMain();
+        }
+      }
+    } else {
+      const filesToReindex = files.filter((f) => this.dirtyFiles.has(f.path));
+      if (filesToReindex.length > 0) {
+        for (let i = 0; i < filesToReindex.length; i += _TaskParser.BATCH_SIZE) {
+          const batch = filesToReindex.slice(i, i + _TaskParser.BATCH_SIZE);
+          await this.processFileBatch(batch);
+        }
+      }
+      const currentPaths = new Set(files.map((f) => f.path));
+      for (const indexedPath of this.taskIndex.keys()) {
+        if (!currentPaths.has(indexedPath)) {
+          this.taskIndex.delete(indexedPath);
         }
       }
     }
-    const total = this.cacheHits + this.cacheMisses;
-    const hitRate = total > 0 ? (this.cacheHits / total * 100).toFixed(1) : "0";
-    console.debug(`[BlockTime] Cache: ${this.cacheHits} hits / ${this.cacheMisses} misses (${hitRate}% hit rate) | ${files.length} arquivos | ${tasks.length} tasks`);
+    this.dirtyFiles.clear();
+    const tasks = [];
+    for (const fileTasks of this.taskIndex.values()) {
+      for (const task of fileTasks) {
+        tasks.push(task);
+      }
+    }
+    const perfEnd = performance.now();
+    const totalFiles = files.length;
+    const indexedCount = this.taskIndex.size;
+    console.debug(
+      `[BlockTime] Scan: ${(perfEnd - perfStart).toFixed(1)}ms | ${totalFiles} arquivos | ${indexedCount} indexados | ${this.filesReindexed} re-parsed | ${this.filesSkipped} skipped | ${tasks.length} tasks | Cache: ${this.cacheHits}/${this.cacheHits + this.cacheMisses} hits`
+    );
     const today = new Date();
     return tasks.filter((task) => {
       if (task.completed || !task.recurrence || this.hasExplicitDate(task.rawLine))
@@ -814,6 +889,10 @@ var TaskParser = class {
   }
   async getTasksForDate(targetDate) {
     const allTasks = await this.getAllTasks();
+    return this.filterTasksForDate(allTasks, targetDate);
+  }
+  /** Filtra tasks para uma data específica a partir de lista pré-carregada (sem re-scan) */
+  filterTasksForDate(allTasks, targetDate) {
     const tasks = [];
     const seenTaskKeys = /* @__PURE__ */ new Set();
     const today = new Date();
@@ -827,6 +906,7 @@ var TaskParser = class {
         seenTaskKeys.add(taskKey);
       }
     }
+    const targetDateStr = this.formatDate(targetDate);
     for (const task of allTasks) {
       if (!task.recurrence)
         continue;
@@ -838,7 +918,7 @@ var TaskParser = class {
         (t) => !t.completed && t.recurrence && t.rawLine.replace(/^(\s*)-\s*\[[xX]\]\s*/, "").replace(/\s*✅\s*\d{4}-\d{2}-\d{2}/, "").trim() === baseTaskText
       );
       if (this.shouldRecurOnDate(task, targetDate)) {
-        const completedVersion = await this.findCompletedTask(task, targetDate);
+        const completedVersion = this.findCompletedTaskFromIndex(allTasks, task, targetDateStr);
         if (completedVersion) {
           tasks.push(completedVersion);
           seenTaskKeys.add(taskKey);
@@ -850,6 +930,22 @@ var TaskParser = class {
       }
     }
     return tasks;
+  }
+  /** Busca task completada diretamente no índice em memória (O(n) no arquivo, sem I/O) */
+  findCompletedTaskFromIndex(allTasks, task, targetDateStr) {
+    const originalText = task.rawLine.replace(/^(\s*)-\s*\[[xX]\]\s*/, "").replace(/\s*✅\s*\d{4}-\d{2}-\d{2}/, "").trim();
+    for (const other of allTasks) {
+      if (!other.completed || other.filePath !== task.filePath)
+        continue;
+      const otherText = other.rawLine.replace(/^(\s*)-\s*\[[xX]\]\s*/, "").replace(/\s*✅\s*\d{4}-\d{2}-\d{2}/, "").trim();
+      if (originalText === otherText) {
+        const doneDateMatch = other.rawLine.match(/✅\s*(\d{4}-\d{2}-\d{2})/);
+        if (doneDateMatch && doneDateMatch[1] === targetDateStr) {
+          return other;
+        }
+      }
+    }
+    return null;
   }
   calculateImplicitStartDate(recurrence, currentDate) {
     const rule = recurrence.toLowerCase().trim();
@@ -1083,12 +1179,13 @@ var TaskParser = class {
     };
   }
   async getTasksForWeek(startDate) {
+    const allTasks = await this.getAllTasks();
     const tasks = [];
     const seenTaskKeys = /* @__PURE__ */ new Set();
     for (let dayOffset = 0; dayOffset < 7; dayOffset++) {
       const currentDay = new Date(startDate);
       currentDay.setDate(startDate.getDate() + dayOffset);
-      const dayTasks = await this.getTasksForDate(currentDay);
+      const dayTasks = this.filterTasksForDate(allTasks, currentDay);
       for (const task of dayTasks) {
         const taskKey = `${task.text.trim()}_${task.filePath}_${currentDay.toDateString()}`;
         if (!seenTaskKeys.has(taskKey)) {
@@ -1221,7 +1318,7 @@ var TaskParser = class {
     return "none";
   }
   cleanTaskText(text) {
-    return text.replace(/📅\s*\d{4}-\d{2}-\d{2}/g, "").replace(/🗓️\s*\d{4}-\d{2}-\d{2}/g, "").replace(/⏳\s*\d{4}-\d{2}-\d{2}/g, "").replace(/⏰\s*\d{1,2}:\d{2}/g, "").replace(/🕐\s*\d{1,2}:\d{2}/g, "").replace(/\[due::\s*\d{4}-\d{2}-\d{2}\]/g, "").replace(/\[time::\s*\d{1,2}:\d{2}\]/g, "").replace(/\[priority::\s*\w+\]/g, "").replace(/due::\s*\d{4}-\d{2}-\d{2}/g, "").replace(/scheduled::\s*\d{4}-\d{2}-\d{2}/g, "").replace(/@\d{4}-\d{2}-\d{2}/g, "").replace(/🔺|⏫|🔼|🔽/g, "").replace(/✅\s*\d{4}-\d{2}-\d{2}/g, "").replace(/🔁\s*[^📅🗓️⏳⏰🕐🔺⏫🔼🔽✅]*/g, "").replace(/\d{1,2}:\d{2}\s*[-–—]\s*\d{1,2}:\d{2}/g, "").replace(/\d{1,2}h\d{2}?\s*[-–—]\s*\d{1,2}h\d{2}?/g, "").replace(/\s+/g, " ").trim();
+    return text.replace(/📅\s*\d{4}-\d{2}-\d{2}/g, "").replace(/🗓️\s*\d{4}-\d{2}-\d{2}/g, "").replace(/⏳\s*\d{4}-\d{2}-\d{2}/g, "").replace(/⏰\s*\d{1,2}:\d{2}/g, "").replace(/🕐\s*\d{1,2}:\d{2}/g, "").replace(/\[due::\s*\d{4}-\d{2}-\d{2}\]/g, "").replace(/\[time::\s*\d{1,2}:\d{2}\]/g, "").replace(/\[priority::\s*\w+\]/g, "").replace(/due::\s*\d{4}-\d{2}-\d{2}/g, "").replace(/scheduled::\s*\d{4}-\d{2}-\d{2}/g, "").replace(/@\d{4}-\d{2}-\d{2}/g, "").replace(/🔺|⏫|🔼|🔽/g, "").replace(/✅\s*\d{4}-\d{2}-\d{2}/g, "").replace(/🔁\s*(.+?)(?=\s*(?:📅|🗓️|⏳|⏰|🕐|🔺|⏫|🔼|🔽|✅|$))/gu, "").replace(/\d{1,2}:\d{2}\s*[-–—]\s*\d{1,2}:\d{2}/g, "").replace(/\d{1,2}h\d{2}?\s*[-–—]\s*\d{1,2}h\d{2}?/g, "").replace(/\s+/g, " ").trim();
   }
   parseDoneDate(text) {
     const match = text.match(/✅\s*(\d{4}-\d{2}-\d{2})/);
@@ -1244,7 +1341,7 @@ var TaskParser = class {
     return datePatterns.some((p) => p.test(line));
   }
   parseRecurrence(text) {
-    const match = text.match(/🔁\s*(.+?)(?=\s*[📅🗓️⏳⏰🕐🔺⏫🔼🔽✅]|$)/);
+    const match = text.match(/🔁\s*(.+?)(?=\s*(?:📅|🗓️|⏳|⏰|🕐|🔺|⏫|🔼|🔽|✅|$))/u);
     if (!match)
       return null;
     return match[1].trim();
@@ -1390,6 +1487,12 @@ var TaskParser = class {
     return date1.getFullYear() === date2.getFullYear() && date1.getMonth() === date2.getMonth() && date1.getDate() === date2.getDate();
   }
 };
+var TaskParser = _TaskParser;
+// Constantes de otimização
+TaskParser.BATCH_SIZE = 50;
+TaskParser.YIELD_EVERY = 200;
+// Regex rápido para early-exit: verifica se arquivo pode ter tasks
+TaskParser.TASK_PATTERN = /^\s*-\s*\[[ xX]\]/m;
 var BlockTimeView = class extends import_obsidian.ItemView {
   constructor(leaf, plugin) {
     super(leaf);
@@ -1400,7 +1503,7 @@ var BlockTimeView = class extends import_obsidian.ItemView {
     this.lastKnownDay = "";
     this.visibilityHandler = null;
     this.plugin = plugin;
-    this.taskParser = new TaskParser(this.app, plugin.settings, plugin.fileContentCache);
+    this.taskParser = new TaskParser(this.app, plugin.settings, plugin.fileContentCache, plugin.taskIndex, plugin.dirtyFiles);
     this.currentDate = new Date();
     this.viewMode = plugin.settings.defaultView;
   }
@@ -1460,14 +1563,22 @@ var BlockTimeView = class extends import_obsidian.ItemView {
     if (today !== this.lastKnownDay) {
       this.lastKnownDay = today;
       this.currentDate = new Date();
-      this.render();
+      void this.render();
     }
+  }
+  navigateDate(delta) {
+    if (this.viewMode === "day") {
+      this.currentDate.setDate(this.currentDate.getDate() + delta);
+    } else {
+      this.currentDate.setDate(this.currentDate.getDate() + delta * 7);
+    }
+    void this.render();
   }
   debouncedRender() {
     if (this.renderTimeout)
       clearTimeout(this.renderTimeout);
     this.renderTimeout = setTimeout(() => {
-      this.render();
+      void this.render();
     }, 800);
   }
   async render() {
@@ -1505,7 +1616,7 @@ var BlockTimeView = class extends import_obsidian.ItemView {
     const todayBtn = nav.createEl("button", { text: this.plugin.i18n.t("today"), cls: "block-time-today-btn" });
     todayBtn.addEventListener("click", () => {
       this.currentDate = new Date();
-      this.render();
+      void this.render();
     });
     const controls = header.createDiv({ cls: "block-time-controls" });
     const viewToggle = controls.createDiv({ cls: "block-time-view-toggle" });
@@ -1515,7 +1626,7 @@ var BlockTimeView = class extends import_obsidian.ItemView {
     });
     dayBtn.addEventListener("click", () => {
       this.viewMode = "day";
-      this.render();
+      void this.render();
     });
     const weekBtn = viewToggle.createEl("button", {
       text: this.plugin.i18n.t("week-view"),
@@ -1523,10 +1634,12 @@ var BlockTimeView = class extends import_obsidian.ItemView {
     });
     weekBtn.addEventListener("click", () => {
       this.viewMode = "week";
-      this.render();
+      void this.render();
     });
     const refreshBtn = controls.createEl("button", { text: "\u{1F504}", cls: "block-time-refresh-btn" });
-    refreshBtn.addEventListener("click", () => this.render());
+    refreshBtn.addEventListener("click", () => {
+      void this.render();
+    });
   }
   updateDateDisplay(element) {
     const dayNames = [
@@ -1661,73 +1774,23 @@ var BlockTimeView = class extends import_obsidian.ItemView {
     const topOffset = (hours - startHour) * 60 + minutes;
     const height = task.duration;
     const block = container.createDiv({ cls: "block-time-task-block" });
-    block.style.top = `${topOffset}px`;
-    block.style.height = `${Math.max(height, 30)}px`;
+    setCssProps(block, {
+      top: `${topOffset}px`,
+      height: `${Math.max(height, 30)}px`
+    });
     block.addClass(`priority-${task.priority}`);
     if (task.completed) {
       block.addClass("completed");
     }
     const checkbox = block.createEl("input", { type: "checkbox", cls: "block-time-task-checkbox" });
     checkbox.checked = task.completed;
-    checkbox.addEventListener("click", async (e) => {
+    checkbox.addEventListener("click", (e) => {
       e.stopPropagation();
       e.preventDefault();
       if (this.isToggling)
         return;
       this.isToggling = true;
-      try {
-        const api = this.plugin.getTasksApi();
-        await this.taskParser.toggleTaskCompletion(task, api);
-        await new Promise((resolve) => setTimeout(resolve, 500));
-        await this.render();
-      } finally {
-        this.isToggling = false;
-      }
-    });
-    const blockContent = block.createDiv({ cls: "block-time-task-content" });
-    const timeLabel = blockContent.createDiv({ cls: "block-time-task-time" });
-    timeLabel.textContent = task.endTime ? `${task.startTime} - ${task.endTime}` : task.startTime;
-    const textLabel = blockContent.createDiv({ cls: "block-time-task-text" });
-    textLabel.textContent = task.text || "Tarefa sem t\xEDtulo";
-    blockContent.addEventListener("click", async () => {
-      const file = this.app.vault.getAbstractFileByPath(task.filePath);
-      if (file instanceof import_obsidian.TFile) {
-        await this.app.workspace.getLeaf(false).openFile(file);
-      }
-    });
-    blockContent.addEventListener("dblclick", async (e) => {
-      e.stopPropagation();
-      const api = this.plugin.getTasksApi();
-      if (!api) {
-        new import_obsidian.Notice("Plugin Tasks n\xE3o encontrado. Instale-o para editar tasks pelo calend\xE1rio.");
-        return;
-      }
-      const edited = await this.taskParser.editTaskLine(task, api);
-      if (edited) {
-        await new Promise((resolve) => setTimeout(resolve, 500));
-        await this.render();
-      }
-    });
-    const apiHint = this.plugin.getTasksApi() ? " | Duplo-clique para editar" : "";
-    block.setAttribute("title", `${task.text}
-\u{1F4C1} ${task.filePath}:${task.line}${apiHint}`);
-  }
-  renderUnscheduledTasks(container, tasks) {
-    const section = container.createDiv({ cls: "block-time-unscheduled" });
-    section.createEl("h4", { text: this.plugin.i18n.t("unscheduled-tasks") });
-    const list = section.createEl("ul", { cls: "block-time-unscheduled-list" });
-    for (const task of tasks) {
-      const item = list.createEl("li", { cls: `priority-${task.priority}` });
-      if (task.completed)
-        item.addClass("completed");
-      const checkbox = item.createEl("input", { type: "checkbox" });
-      checkbox.checked = task.completed;
-      checkbox.addEventListener("click", async (e) => {
-        e.stopPropagation();
-        e.preventDefault();
-        if (this.isToggling)
-          return;
-        this.isToggling = true;
+      void (async () => {
         try {
           const api = this.plugin.getTasksApi();
           await this.taskParser.toggleTaskCompletion(task, api);
@@ -1736,24 +1799,91 @@ var BlockTimeView = class extends import_obsidian.ItemView {
         } finally {
           this.isToggling = false;
         }
-      });
-      const textSpan = item.createSpan({ text: task.text || "Tarefa sem t\xEDtulo" });
-      textSpan.addEventListener("click", async () => {
+      })();
+    });
+    const blockContent = block.createDiv({ cls: "block-time-task-content" });
+    const timeLabel = blockContent.createDiv({ cls: "block-time-task-time" });
+    timeLabel.textContent = task.endTime ? `${task.startTime} - ${task.endTime}` : task.startTime;
+    const textLabel = blockContent.createDiv({ cls: "block-time-task-text" });
+    textLabel.textContent = task.text || "Tarefa sem t\xEDtulo";
+    blockContent.addEventListener("click", () => {
+      void (async () => {
         const file = this.app.vault.getAbstractFileByPath(task.filePath);
         if (file instanceof import_obsidian.TFile) {
           await this.app.workspace.getLeaf(false).openFile(file);
         }
-      });
-      textSpan.addEventListener("dblclick", async (e) => {
-        e.stopPropagation();
+      })();
+    });
+    blockContent.addEventListener("dblclick", (e) => {
+      e.stopPropagation();
+      void (async () => {
         const api = this.plugin.getTasksApi();
-        if (!api)
+        if (!api) {
+          new import_obsidian.Notice("Plugin Tasks n\xE3o encontrado. Instale-o para editar tasks pelo calend\xE1rio.");
           return;
+        }
         const edited = await this.taskParser.editTaskLine(task, api);
         if (edited) {
           await new Promise((resolve) => setTimeout(resolve, 500));
           await this.render();
         }
+      })();
+    });
+    const apiHint = this.plugin.getTasksApi() ? " | Duplo-clique para editar" : "";
+    block.setAttribute("title", `${task.text}
+\u{1F4C1} ${task.filePath}:${task.line}${apiHint}`);
+  }
+  renderUnscheduledTasks(container, tasks) {
+    const section = container.createDiv({ cls: "block-time-unscheduled" });
+    const heading = new import_obsidian.Setting(section);
+    heading.setName(this.plugin.i18n.t("unscheduled-tasks"));
+    heading.setHeading();
+    heading.settingEl.remove();
+    const list = section.createEl("ul", { cls: "block-time-unscheduled-list" });
+    for (const task of tasks) {
+      const item = list.createEl("li", { cls: `priority-${task.priority}` });
+      if (task.completed)
+        item.addClass("completed");
+      const checkbox = item.createEl("input", { type: "checkbox" });
+      checkbox.checked = task.completed;
+      checkbox.addEventListener("click", (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        if (this.isToggling)
+          return;
+        this.isToggling = true;
+        void (async () => {
+          try {
+            const api = this.plugin.getTasksApi();
+            await this.taskParser.toggleTaskCompletion(task, api);
+            await new Promise((resolve) => setTimeout(resolve, 500));
+            await this.render();
+          } finally {
+            this.isToggling = false;
+          }
+        })();
+      });
+      const textSpan = item.createSpan({ text: task.text || "Tarefa sem t\xEDtulo" });
+      textSpan.addEventListener("click", () => {
+        void (async () => {
+          const file = this.app.vault.getAbstractFileByPath(task.filePath);
+          if (file instanceof import_obsidian.TFile) {
+            await this.app.workspace.getLeaf(false).openFile(file);
+          }
+        })();
+      });
+      textSpan.addEventListener("dblclick", (e) => {
+        e.stopPropagation();
+        void (async () => {
+          const api = this.plugin.getTasksApi();
+          if (!api)
+            return;
+          const edited = await this.taskParser.editTaskLine(task, api);
+          if (edited) {
+            await new Promise((resolve) => setTimeout(resolve, 500));
+            await this.render();
+          }
+        })();
       });
     }
   }
@@ -1763,61 +1893,60 @@ var BlockTimeView = class extends import_obsidian.ItemView {
       return;
     slot.addClass("block-time-slot-clickable");
     slot.setAttribute("title", "Clique para criar task neste hor\xE1rio");
-    slot.addEventListener("click", async (e) => {
-      var _a;
+    slot.addEventListener("click", (e) => {
       if (e.target !== slot)
         return;
-      const taskLine = await api.createTaskLineModal();
-      if (!taskLine)
-        return;
-      const dateStr = `${date.getFullYear()}-${(date.getMonth() + 1).toString().padStart(2, "0")}-${date.getDate().toString().padStart(2, "0")}`;
-      let targetPath;
-      if (this.plugin.settings.taskCreationFolder.trim()) {
-        const folder = this.plugin.settings.taskCreationFolder.trim();
-        targetPath = folder.endsWith(".md") ? folder : `${folder}.md`;
-      } else {
-        targetPath = this.getDailyNotePath(date);
-      }
-      let file = this.app.vault.getAbstractFileByPath(targetPath);
-      if (!file) {
-        try {
-          const fileName = ((_a = targetPath.split("/").pop()) == null ? void 0 : _a.replace(".md", "")) || dateStr;
-          file = await this.app.vault.create(targetPath, `# ${fileName}
+      void (async () => {
+        var _a;
+        const taskLine = await api.createTaskLineModal();
+        if (!taskLine)
+          return;
+        let targetPath;
+        if (this.plugin.settings.taskCreationFolder.trim()) {
+          const folder = this.plugin.settings.taskCreationFolder.trim();
+          targetPath = folder.endsWith(".md") ? folder : `${folder}.md`;
+        } else {
+          targetPath = this.getDailyNotePath(date);
+        }
+        let file = this.app.vault.getAbstractFileByPath(targetPath);
+        if (!file) {
+          try {
+            const fallbackName = date.toISOString().slice(0, 10);
+            const fileName = ((_a = targetPath.split("/").pop()) == null ? void 0 : _a.replace(".md", "")) || fallbackName;
+            file = await this.app.vault.create(targetPath, `# ${fileName}
 
 `);
-        } catch (e2) {
-          new import_obsidian.Notice(`N\xE3o foi poss\xEDvel criar ${targetPath}`);
-          return;
+          } catch (e2) {
+            new import_obsidian.Notice(`N\xE3o foi poss\xEDvel criar ${targetPath}`);
+            return;
+          }
         }
-      }
-      if (!(file instanceof import_obsidian.TFile))
-        return;
-      const content = await this.app.vault.read(file);
-      const hourStr = `${hour.toString().padStart(2, "0")}:00`;
-      const lineToInsert = taskLine.includes(hourStr) ? taskLine : taskLine;
-      const newContent = content.trimEnd() + "\n" + lineToInsert + "\n";
-      await this.app.vault.modify(file, newContent);
-      new import_obsidian.Notice(`Task criada em ${targetPath}`);
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      await this.render();
+        if (!(file instanceof import_obsidian.TFile))
+          return;
+        const content = await this.app.vault.read(file);
+        const hourStr = `${hour.toString().padStart(2, "0")}:00`;
+        const lineToInsert = taskLine.includes(hourStr) ? taskLine : taskLine;
+        const newContent = content.trimEnd() + "\n" + lineToInsert + "\n";
+        await this.app.vault.modify(file, newContent);
+        new import_obsidian.Notice(`Task criada em ${targetPath}`);
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        await this.render();
+      })();
     });
   }
   getDailyNotePath(date) {
-    var _a, _b, _c, _d, _e;
-    const dateStr = `${date.getFullYear()}-${(date.getMonth() + 1).toString().padStart(2, "0")}-${date.getDate().toString().padStart(2, "0")}`;
-    const dailyNotesPlugin = (_c = (_b = (_a = this.app.internalPlugins) == null ? void 0 : _a.plugins) == null ? void 0 : _b["daily-notes"]) == null ? void 0 : _c.instance;
-    const format = ((_d = dailyNotesPlugin == null ? void 0 : dailyNotesPlugin.options) == null ? void 0 : _d.format) || "YYYY-MM-DD";
-    const folder = ((_e = dailyNotesPlugin == null ? void 0 : dailyNotesPlugin.options) == null ? void 0 : _e.folder) || "";
-    const fileName = (0, import_obsidian.moment)(date).format(format);
-    return folder ? `${folder}/${fileName}.md` : `${fileName}.md`;
-  }
-  navigateDate(delta) {
-    if (this.viewMode === "day") {
-      this.currentDate.setDate(this.currentDate.getDate() + delta);
-    } else {
-      this.currentDate.setDate(this.currentDate.getDate() + delta * 7);
+    var _a, _b, _c, _d, _e, _f, _g;
+    try {
+      const appWithInternal = this.app;
+      const dailyNotesPlugin = (_c = (_b = (_a = appWithInternal.internalPlugins) == null ? void 0 : _a.plugins) == null ? void 0 : _b["daily-notes"]) == null ? void 0 : _c.instance;
+      const format = (_e = (_d = dailyNotesPlugin == null ? void 0 : dailyNotesPlugin.options) == null ? void 0 : _d.format) != null ? _e : "YYYY-MM-DD";
+      const folder = (_g = (_f = dailyNotesPlugin == null ? void 0 : dailyNotesPlugin.options) == null ? void 0 : _f.folder) != null ? _g : "";
+      const fileName = (0, import_obsidian.moment)(date).format(format);
+      return folder ? `${folder}/${fileName}.md` : fileName;
+    } catch (e) {
+      const fileName = (0, import_obsidian.moment)(date).format("YYYY-MM-DD");
+      return `${fileName}.md`;
     }
-    this.render();
   }
   getStartOfWeek(date) {
     const d = new Date(date);
@@ -1851,7 +1980,6 @@ var BlockTimeSettingTab = class extends import_obsidian.PluginSettingTab {
     if (this.folderCache && this.folderCache.folders.size > 0 && now - this.folderCache.timestamp < this.CACHE_DURATION) {
       return this.folderCache.folders;
     }
-    const startTime = performance.now();
     const folders = /* @__PURE__ */ new Set();
     const files = this.app.vault.getFiles();
     for (const file of files) {
@@ -1870,7 +1998,6 @@ var BlockTimeSettingTab = class extends import_obsidian.PluginSettingTab {
       fileCount: files.length
       // Mantido para logging, não usado na validação
     };
-    const endTime = performance.now();
     return folders;
   }
   invalidateFolderCache() {
@@ -1884,7 +2011,6 @@ var BlockTimeSettingTab = class extends import_obsidian.PluginSettingTab {
     if (this.folderTreeCache && this.folderTreeCache.tree.length > 0 && now - this.folderTreeCache.timestamp < this.CACHE_DURATION) {
       return this.folderTreeCache.tree;
     }
-    const startTime = performance.now();
     const nodeMap = /* @__PURE__ */ new Map();
     for (const file of files) {
       const parts = file.path.split("/");
@@ -1917,7 +2043,6 @@ var BlockTimeSettingTab = class extends import_obsidian.PluginSettingTab {
       fileCount: files.length
       // Mantido para logging, não usado na validação
     };
-    const endTime = performance.now();
     return tree;
   }
   parseSelectedFolders() {
@@ -1926,8 +2051,8 @@ var BlockTimeSettingTab = class extends import_obsidian.PluginSettingTab {
   display() {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl("h1", { text: this.plugin.i18n.t("view-title") });
-    containerEl.createEl("h2", { text: this.plugin.i18n.t("settings-agenda") });
+    new import_obsidian.Setting(containerEl).setName(this.plugin.i18n.t("view-title")).setHeading();
+    new import_obsidian.Setting(containerEl).setName(this.plugin.i18n.t("settings-agenda")).setHeading();
     new import_obsidian.Setting(containerEl).setName(this.plugin.i18n.t("start-hour")).setDesc(this.plugin.i18n.t("start-hour-desc")).addSlider((slider) => slider.setLimits(0, 12, 1).setValue(this.plugin.settings.startHour).setDynamicTooltip().onChange(async (value) => {
       this.plugin.settings.startHour = value;
       await this.plugin.saveSettings();
@@ -1942,37 +2067,51 @@ var BlockTimeSettingTab = class extends import_obsidian.PluginSettingTab {
     }));
     new import_obsidian.Setting(containerEl).setName("Pastas a escanear").setDesc("Selecione as pastas onde buscar tarefas. Nenhuma selecionada = vault inteiro.");
     this.renderFolderPicker(containerEl);
-    const infoBox = containerEl.createDiv({ cls: "setting-item-description" });
-    infoBox.style.marginTop = "8px";
-    infoBox.style.padding = "10px 12px";
-    infoBox.style.borderRadius = "6px";
-    infoBox.style.backgroundColor = "var(--background-secondary)";
-    infoBox.style.lineHeight = "1.6";
-    infoBox.innerHTML = `
-			<strong>Como funciona a cria\xE7\xE3o e edi\xE7\xE3o de tasks:</strong><br>
-			<br>
-			<strong>Clique em slot vazio</strong> na grade de horas \u2014 abre o modal do plugin <em>Tasks</em> para criar uma nova task. 
-			A task \xE9 salva automaticamente no <strong>Daily Note</strong> do dia clicado, respeitando a pasta e formato configurados 
-			no plugin <em>Daily Notes</em> do Obsidian (Configura\xE7\xF5es \u2192 Daily Notes).<br>
-			<br>
-			<strong>Duplo-clique em uma task</strong> \u2014 abre o modal do <em>Tasks</em> para editar a task existente (data, hora, recorr\xEAncia, etc.). 
-			As altera\xE7\xF5es s\xE3o salvas diretamente no arquivo original.<br>
-			<br>
-			<strong>Checkbox</strong> \u2014 marca/desmarca a task. Se o plugin <em>Tasks</em> estiver instalado, usa a l\xF3gica dele 
-			(recorr\xEAncia autom\xE1tica, done date, etc.). Caso contr\xE1rio, usa l\xF3gica manual interna.<br>
-			<br>
-			<em>Requer o plugin <strong>Tasks</strong> (<code>obsidian-tasks-plugin</code>) para criar e editar. 
-			Sem ele, apenas o toggle por checkbox funciona.</em>
-		`;
-    containerEl.createEl("h2", { text: this.plugin.i18n.t("settings-appearance") });
+    const infoBox = containerEl.createDiv({ cls: "setting-item-description block-time-info-box" });
+    const infoTitle = infoBox.createEl("strong", { text: "Como funciona a cria\xE7\xE3o e edi\xE7\xE3o de tasks:" });
+    infoBox.createEl("br");
+    infoBox.createEl("br");
+    infoBox.createEl("span", {
+      text: "Clique em slot vazio na grade de horas \u2014 abre o modal do plugin Tasks para criar uma nova task. "
+    });
+    infoBox.createEl("span", {
+      text: "A task \xE9 salva automaticamente no Daily Note do dia clicado, respeitando a pasta e formato configurados "
+    });
+    infoBox.createEl("span", {
+      text: "no plugin Daily Notes do Obsidian (Configura\xE7\xF5es \u2192 Daily Notes)."
+    });
+    infoBox.createEl("br");
+    infoBox.createEl("br");
+    infoBox.createEl("span", {
+      text: "Duplo-clique em uma task \u2014 abre o modal do Tasks para editar a task existente (data, hora, recorr\xEAncia, etc.). "
+    });
+    infoBox.createEl("span", {
+      text: "As altera\xE7\xF5es s\xE3o salvas diretamente no arquivo original."
+    });
+    infoBox.createEl("br");
+    infoBox.createEl("br");
+    infoBox.createEl("span", {
+      text: "Checkbox \u2014 marca ou desmarca a task. Se o plugin Tasks estiver instalado, usa a l\xF3gica dele "
+    });
+    infoBox.createEl("span", {
+      text: "(recorr\xEAncia autom\xE1tica, done date, etc.). Caso contr\xE1rio, usa l\xF3gica manual interna."
+    });
+    infoBox.createEl("br");
+    infoBox.createEl("br");
+    infoBox.createEl("em", {
+      text: "Requer o plugin Tasks (obsidian-tasks-plugin) para criar e editar. Sem ele, apenas o toggle por checkbox funciona."
+    });
+    new import_obsidian.Setting(containerEl).setName(this.plugin.i18n.t("settings-appearance")).setHeading();
     new import_obsidian.Setting(containerEl).setName("Usar tema do Obsidian").setDesc("Herda as cores do tema ativo (incluindo temas baixados). Desative para usar as cores padr\xE3o do plugin.").addToggle((toggle) => toggle.setValue(this.plugin.settings.useObsidianTheme).onChange(async (value) => {
       this.plugin.settings.useObsidianTheme = value;
       await this.plugin.saveSettings();
-      this.app.workspace.getLeavesOfType("block-time-view").forEach((leaf) => {
-        leaf.view.render();
+      this.app.workspace.getLeavesOfType(VIEW_TYPE_BLOCK_TIME).forEach((leaf) => {
+        const view = leaf.view;
+        if (view.render)
+          void view.render();
       });
     }));
-    containerEl.createEl("h2", { text: this.plugin.i18n.t("settings-notifications") });
+    new import_obsidian.Setting(containerEl).setName(this.plugin.i18n.t("settings-notifications")).setHeading();
     new import_obsidian.Setting(containerEl).setName("Ativar notifica\xE7\xF5es").setDesc("Notifica\xE7\xE3o desktop e in-app quando uma tarefa com hor\xE1rio estiver prestes a come\xE7ar.").addToggle((toggle) => toggle.setValue(this.plugin.settings.enableNotifications).onChange(async (value) => {
       this.plugin.settings.enableNotifications = value;
       await this.plugin.saveSettings();
@@ -1990,7 +2129,7 @@ var BlockTimeSettingTab = class extends import_obsidian.PluginSettingTab {
       this.plugin.settings.reminderMinutesBefore = value;
       await this.plugin.saveSettings();
     }));
-    containerEl.createEl("h2", { text: this.plugin.i18n.t("settings-deadlines") });
+    new import_obsidian.Setting(containerEl).setName(this.plugin.i18n.t("settings-deadlines")).setHeading();
     new import_obsidian.Setting(containerEl).setName("Ativar lembretes de prazo").setDesc("Notifica sobre tasks com tags de prazo pr\xF3ximas do vencimento.").addToggle((toggle) => toggle.setValue(this.plugin.settings.enableDeadlineReminders).onChange(async (value) => {
       this.plugin.settings.enableDeadlineReminders = value;
       await this.plugin.saveSettings();
@@ -2030,7 +2169,7 @@ var BlockTimeSettingTab = class extends import_obsidian.PluginSettingTab {
     }
   }
   renderFolderPicker(containerEl) {
-    new import_obsidian.Setting(containerEl).setName(this.plugin.i18n.t("advanced-folder-mode")).setDesc(this.plugin.i18n.t("advanced-folder-mode-desc")).addToggle((toggle) => toggle.setValue(false).onChange(async (value) => {
+    new import_obsidian.Setting(containerEl).setName(this.plugin.i18n.t("advanced-folder-mode")).setDesc(this.plugin.i18n.t("advanced-folder-mode-desc")).addToggle((toggle) => toggle.setValue(false).onChange((value) => {
       this.renderFolderPickerWithMode(pickerContainer, value);
     }));
     const pickerContainer = containerEl.createDiv({ cls: "block-time-folder-picker-container" });
@@ -2047,24 +2186,16 @@ var BlockTimeSettingTab = class extends import_obsidian.PluginSettingTab {
   renderSimpleFolderPicker(containerEl) {
     new import_obsidian.Setting(containerEl).setName(this.plugin.i18n.t("scan-folders")).setDesc(this.plugin.i18n.t("scan-folders-desc")).addText((text) => {
       const folders = this.getAllFolders();
-      const folderSuggest = new FolderSuggest(this.app, text.inputEl, folders);
-      folderSuggest.onSelect((folder, evt) => {
-        const currentValue = text.getValue();
-        const foldersList = currentValue.split(",").map((f) => f.trim()).filter((f) => f);
-        if (!foldersList.includes(folder)) {
-          foldersList.push(folder);
-          text.setValue(foldersList.join(", "));
-        }
-      });
-      return text.setPlaceholder("Exemplo: pasta1, pasta2/subpasta").setValue(this.plugin.settings.scanFolders).onChange(async (value) => {
+      new FolderSuggest(this.app, text.inputEl, folders);
+      return text.setPlaceholder("Example: folder1, folder2/subfolder").setValue(this.plugin.settings.scanFolders).onChange(async (value) => {
         this.plugin.settings.scanFolders = value;
         await this.plugin.saveSettings();
       });
     });
-    new import_obsidian.Setting(containerEl).setName("Pasta para cria\xE7\xE3o de tasks").setDesc("Nome do arquivo onde as novas tasks ser\xE3o criadas (padr\xE3o: Task)").addText((text) => {
+    new import_obsidian.Setting(containerEl).setName("Folder for task creation").setDesc("File name where new tasks will be created (default: Task)").addText((text) => {
       const folders = this.getAllFolders();
-      const folderSuggest = new FolderSuggest(this.app, text.inputEl, folders);
-      return text.setPlaceholder("Exemplo: Task ou Tasks/MinhasTasks").setValue(this.plugin.settings.taskCreationFolder).onChange(async (value) => {
+      new FolderSuggest(this.app, text.inputEl, folders);
+      return text.setPlaceholder("Example: Task or Tasks/MyTasks").setValue(this.plugin.settings.taskCreationFolder).onChange(async (value) => {
         this.plugin.settings.taskCreationFolder = value;
         await this.plugin.saveSettings();
       });
@@ -2084,12 +2215,14 @@ var BlockTimeSettingTab = class extends import_obsidian.PluginSettingTab {
         const tag = tagsEl.createSpan({ cls: "block-time-folder-tag" });
         tag.createSpan({ text: folder });
         const removeBtn = tag.createSpan({ text: " \u2715", cls: "block-time-folder-tag-remove" });
-        removeBtn.addEventListener("click", async () => {
-          selectedFolders.splice(selectedFolders.indexOf(folder), 1);
-          this.plugin.settings.scanFolders = selectedFolders.join(", ");
-          await this.plugin.saveSettings();
-          renderTags();
-          renderTree();
+        removeBtn.addEventListener("click", () => {
+          void (async () => {
+            selectedFolders.splice(selectedFolders.indexOf(folder), 1);
+            this.plugin.settings.scanFolders = selectedFolders.join(", ");
+            await this.plugin.saveSettings();
+            renderTags();
+            renderTree();
+          })();
         });
       }
     };
@@ -2101,30 +2234,31 @@ var BlockTimeSettingTab = class extends import_obsidian.PluginSettingTab {
       cls: "block-time-folder-search-input"
     });
     const treeEl = pickerEl.createDiv({ cls: "block-time-folder-tree" });
-    treeEl.style.display = "block";
     const expandedSet = /* @__PURE__ */ new Set();
     const renderNode = (node, depth = 0, filterQuery = "") => {
       if (filterQuery && !node.name.toLowerCase().includes(filterQuery.toLowerCase())) {
         return;
       }
       const rowEl = treeEl.createDiv({ cls: "block-time-folder-row" });
-      rowEl.style.paddingLeft = `${depth * 16}px`;
+      setCssProps(rowEl, { "padding-left": `${depth * 16}px` });
       const cb = rowEl.createEl("input", { type: "checkbox", cls: "block-time-folder-cb" });
       cb.checked = selectedFolders.includes(node.path);
-      cb.addEventListener("change", async () => {
-        if (cb.checked) {
-          if (!selectedFolders.includes(node.path)) {
-            selectedFolders.push(node.path);
+      cb.addEventListener("change", () => {
+        void (async () => {
+          if (cb.checked) {
+            if (!selectedFolders.includes(node.path)) {
+              selectedFolders.push(node.path);
+            }
+          } else {
+            const index = selectedFolders.indexOf(node.path);
+            if (index > -1) {
+              selectedFolders.splice(index, 1);
+            }
           }
-        } else {
-          const index = selectedFolders.indexOf(node.path);
-          if (index > -1) {
-            selectedFolders.splice(index, 1);
-          }
-        }
-        this.plugin.settings.scanFolders = selectedFolders.join(", ");
-        await this.plugin.saveSettings();
-        renderTags();
+          this.plugin.settings.scanFolders = selectedFolders.join(", ");
+          await this.plugin.saveSettings();
+          renderTags();
+        })();
       });
       if (node.children.length > 0) {
         const arrow = rowEl.createSpan({ cls: "block-time-folder-arrow has-children" });
@@ -2161,18 +2295,11 @@ var BlockTimeSettingTab = class extends import_obsidian.PluginSettingTab {
     };
     searchInput.addEventListener("input", () => {
       const query = searchInput.value.toLowerCase().trim();
-      treeEl.style.display = "block";
       renderTree(query);
     });
     pickerEl.addEventListener("click", () => {
       searchInput.focus();
-      treeEl.style.display = "block";
       renderTree(searchInput.value);
-    });
-    document.addEventListener("click", (e) => {
-      if (!pickerEl.contains(e.target)) {
-        treeEl.style.display = "none";
-      }
     });
     renderTree();
   }
