@@ -44,7 +44,7 @@ class FolderSuggest extends AbstractInputSuggest<string> {
 		el.setText(folder);
 	}
 
-	selectSuggestion(folder: string, evt: MouseEvent | KeyboardEvent): void {
+	selectSuggestion(folder: string, _evt: MouseEvent | KeyboardEvent): void {
 		this.setValue(folder);
 		this.close();
 	}
@@ -625,25 +625,25 @@ export default class BlockTimeSchedulerPlugin extends Plugin {
 		this.addSettingTab(this.settingTab);
 
 		// Eventos para invalidar cache de pastas quando arquivos são modificados
-		this.registerEvent(this.app.vault.on('modify', (file) => {
+		this.registerEvent(this.app.vault.on('modify', () => {
 			if (this.settingTab) {
 				this.settingTab.invalidateFolderCache();
 			}
 		}));
 
-		this.registerEvent(this.app.vault.on('delete', (file) => {
+		this.registerEvent(this.app.vault.on('delete', () => {
 			if (this.settingTab) {
 				this.settingTab.invalidateFolderCache();
 			}
 		}));
 
-		this.registerEvent(this.app.vault.on('rename', (file, oldPath) => {
+		this.registerEvent(this.app.vault.on('rename', () => {
 			if (this.settingTab) {
 				this.settingTab.invalidateFolderCache();
 			}
 		}));
 
-		this.registerEvent(this.app.metadataCache.on('changed', (file) => {
+		this.registerEvent(this.app.metadataCache.on('changed', () => {
 			if (this.settingTab) {
 				this.settingTab.invalidateFolderCache();
 			}
@@ -878,9 +878,9 @@ export default class BlockTimeSchedulerPlugin extends Plugin {
 			.replace(/\{task\}/g, task.text)
 			.replace(/\{min\}/g, diffMin !== undefined ? String(diffMin) : "")
 			.replace(/\{days\}/g, diffDays !== undefined ? String(diffDays) : "")
-			.replace(/\{time\}/g, task.startTime || "")
-			.replace(/\{endTime\}/g, task.endTime || "")
-			.replace(/\{file\}/g, task.filePath.split("/").pop() || "")
+			.replace(/\{time\}/g, task.startTime ?? "")
+			.replace(/\{endTime\}/g, task.endTime ?? "")
+			.replace(/\{file\}/g, task.filePath.split("/").pop() ?? "")
 			.replace(/\{date\}/g, task.date ? this.formatDateStr(task.date) : "");
 	}
 
@@ -1109,21 +1109,19 @@ class TaskParser {
 			`Cache: ${this.cacheHits}/${this.cacheHits + this.cacheMisses} hits`
 		);
 
-		// Filtra tasks [ ] + 🔁 sem data que já foram completadas hoje
+		// Filtra tasks [ ] + sem data que já foram completadas hoje
 		const today = new Date();
 		return tasks.filter(task => {
 			if (task.completed || !task.recurrence || this.hasExplicitDate(task.rawLine)) return true;
 
-			const hasDoneToday = tasks.some(other =>
-				other.completed &&
-				other.recurrence &&
-				other.filePath === task.filePath &&
-				other.text === task.text &&
-				!this.hasExplicitDate(other.rawLine) &&
-				this.parseDoneDate(other.rawLine) !== null &&
-				this.isSameDay(this.parseDoneDate(other.rawLine)!, today)
-			);
-			
+			const hasDoneToday = tasks.some(other => {
+				if (!other.completed || !other.recurrence) return false;
+				if (other.filePath !== task.filePath || other.text !== task.text) return false;
+				if (this.hasExplicitDate(other.rawLine)) return false;
+				const doneDate = this.parseDoneDate(other.rawLine);
+				return doneDate !== null && this.isSameDay(doneDate, today);
+			});
+
 			if (hasDoneToday) {
 				const hasPending = tasks.some(other =>
 					!other.completed &&
@@ -1154,7 +1152,8 @@ class TaskParser {
 		// 1. Adiciona TODAS as tarefas existentes com data explícita (incluindo completadas)
 		for (const task of allTasks) {
 			const hasExplicitDate = task.date && this.isSameDay(task.date, targetDate);
-			const hasDoneDate = this.parseDoneDate(task.rawLine) && this.isSameDay(this.parseDoneDate(task.rawLine)!, targetDate);
+			const parsedDoneDate = this.parseDoneDate(task.rawLine);
+			const hasDoneDate = parsedDoneDate !== null && this.isSameDay(parsedDoneDate, targetDate);
 			
 			if (hasExplicitDate || hasDoneDate) {
 				const taskKey = `${task.rawLine.trim()}_${task.filePath}`;
@@ -1958,13 +1957,14 @@ class BlockTimeView extends ItemView {
 		document.addEventListener("visibilitychange", this.visibilityHandler);
 	}
 
-	async onClose(): Promise<void> {
+	onClose(): Promise<void> {
 		if (this.renderTimeout) clearTimeout(this.renderTimeout);
 		if (this.dayCheckInterval) clearInterval(this.dayCheckInterval);
 		if (this.visibilityHandler) {
 			document.removeEventListener("visibilitychange", this.visibilityHandler);
 		}
 		this.contentEl.empty();
+		return Promise.resolve();
 	}
 
 	private checkDayChange() {
@@ -2314,7 +2314,7 @@ class BlockTimeView extends ItemView {
 			void (async () => {
 				const api = this.plugin.getTasksApi();
 				if (!api) {
-					new Notice("Plugin Tasks não encontrado. Instale-o para editar tasks pelo calendário.");
+					new Notice("Tasks plugin not found. Install it to edit tasks from the calendar.");
 					return;
 				}
 				const edited = await this.taskParser.editTaskLine(task, api);
@@ -2420,7 +2420,7 @@ class BlockTimeView extends ItemView {
 				if (!file) {
 					try {
 						const fallbackName = date.toISOString().slice(0, 10);
-						const fileName = targetPath.split("/").pop()?.replace(".md", "") || fallbackName;
+						const fileName = targetPath.split("/").pop()?.replace(".md", "") ?? fallbackName;
 						file = await this.app.vault.create(targetPath, `# ${fileName}\n\n`);
 					} catch {
 						new Notice(`Não foi possível criar ${targetPath}`);
@@ -2592,9 +2592,9 @@ class BlockTimeSettingTab extends PluginSettingTab {
 
 				// Adiciona como filho do pai
 				if (parentPath && nodeMap.has(parentPath)) {
-					const parentNode = nodeMap.get(parentPath)!;
-					const currentNode = nodeMap.get(currentPath)!;
-					if (!parentNode.children.includes(currentNode)) {
+					const parentNode = nodeMap.get(parentPath);
+					const currentNode = nodeMap.get(currentPath);
+					if (parentNode && currentNode && !parentNode.children.includes(currentNode)) {
 						parentNode.children.push(currentNode);
 					}
 				}
@@ -2680,17 +2680,14 @@ class BlockTimeSettingTab extends PluginSettingTab {
 
 		// Info box: integração Tasks API + criação de tasks
 		const infoBox = containerEl.createDiv({ cls: "setting-item-description block-time-info-box" });
-		const infoTitle = infoBox.createEl("strong", { text: "Como funciona a criação e edição de tasks:" });
+		infoBox.createEl("strong", { text: "Como funciona a criação e edição de tasks:" });
 		infoBox.createEl("br");
 		infoBox.createEl("br");
 		infoBox.createEl("span", {
 			text: "Clique em slot vazio na grade de horas — abre o modal do plugin Tasks para criar uma nova task. "
 		});
 		infoBox.createEl("span", {
-			text: "A task é salva automaticamente no Daily Note do dia clicado, respeitando a pasta e formato configurados "
-		});
-		infoBox.createEl("span", {
-			text: "no plugin Daily Notes do Obsidian (Configurações → Daily Notes)."
+			text: "A task é salva automaticamente no Daily Note do dia clicado, respeitando a pasta e formato configurados no plugin Daily Notes do Obsidian (Configurações → Daily Notes)."
 		});
 		infoBox.createEl("br");
 		infoBox.createEl("br");
@@ -2730,7 +2727,7 @@ class BlockTimeSettingTab extends PluginSettingTab {
 					this.plugin.settings.useObsidianTheme = value;
 					await this.plugin.saveSettings();
 					this.app.workspace.getLeavesOfType(VIEW_TYPE_BLOCK_TIME).forEach(leaf => {
-						const view = leaf.view as any;
+						const view = leaf.view as unknown as BlockTimeView;
 						if (view.render) void view.render();
 					});
 				}));
@@ -2916,13 +2913,13 @@ class BlockTimeSettingTab extends PluginSettingTab {
 		// Configuração de pasta para criação de tasks
 		new Setting(containerEl)
 			.setName("Folder for task creation")
-			.setDesc("File name where new tasks will be created (default: Task)")
+			.setDesc("Folder or file path where new tasks will be created (default: task)")
 			.addText(text => {
 				const folders = this.getAllFolders();
 				new FolderSuggest(this.app, text.inputEl, folders);
 				
 				return text
-					.setPlaceholder("Example: Task or Tasks/MyTasks")
+					.setPlaceholder("Example: task or Tasks/MyTasks")
 					.setValue(this.plugin.settings.taskCreationFolder)
 					.onChange(async (value) => {
 						this.plugin.settings.taskCreationFolder = value;
