@@ -593,7 +593,6 @@ var BlockTimeSchedulerPlugin = class extends import_obsidian.Plugin {
   }
   onunload() {
     this.stopNotificationScheduler();
-    this.app.workspace.detachLeavesOfType(VIEW_TYPE_BLOCK_TIME);
     console.debug(`Block Time Scheduler v${PLUGIN_VERSION} descarregado!`);
   }
   getTasksApi() {
