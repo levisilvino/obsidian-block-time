@@ -2905,7 +2905,7 @@ class BlockTimeSettingTab extends PluginSettingTab {
 				new FolderSuggest(this.app, text.inputEl, folders);
 				
 				return text
-					.setPlaceholder("Example: task or Tasks/MyTasks")
+					.setPlaceholder("Example: task or tasks/mytasks")
 					.setValue(this.plugin.settings.taskCreationFolder)
 					.onChange(async (value) => {
 						this.plugin.settings.taskCreationFolder = value;
